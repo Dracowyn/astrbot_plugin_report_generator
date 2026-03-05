@@ -1,5 +1,5 @@
 name: astrbot_plugin_report_generator
-desc: 喜报/悲报图片生成器，支持群组黑白名单、用户ID限制。
+desc: 喜报 / 悲报图片生成插件，支持 Emoji 渲染、群组黑白名单过滤及用户 ID 限制。
 help: "指令：/喜报 <内容>、/悲报 <内容>"
 version: v1.0.0
 author: Dracowyn
