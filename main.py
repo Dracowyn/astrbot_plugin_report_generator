@@ -32,8 +32,13 @@ class Main(Star):
             self._pilmoji_class: type | None = _PilmojiClass
         except ImportError:
             self._pilmoji_class = None
-            # pilmoji 是可选依赖，import 不会失败，因此不会触发 AstrBot 的自动安装机制
-            # 需要在此处主动安装，安装完成后重新导入以启用 Emoji 渲染
+            # pilmoji 未安装，延迟到 on_astrbot_loaded 魔法再调度安装，避免 __init__ 中无事件循环的风险
+
+    @filter.on_astrbot_loaded()
+    async def on_loaded(self, event) -> None:
+        """框架完全启动后，若 pilmoji 未安装则在此调度安装。"""
+        if self._pilmoji_class is None:
+            # 平台此时已有运行中的事件循环，可安全创建任务
             logger.info("[report_generator] pilmoji 未安装，正在自动安装...")
             task = asyncio.create_task(
                 self._install_pilmoji(),
@@ -110,7 +115,15 @@ class Main(Star):
         # --- 群组过滤 ----------------------------------------------- #
         if group_id and self.config.get("group_filter_enabled", False):
             mode = self.config.get("group_filter_mode", "blacklist")
-            group_list = [str(g) for g in self.config.get("group_list", [])]
+            raw_group_list = self.config.get("group_list", [])
+            group_list = [
+                str(g)
+                for g in (
+                    raw_group_list
+                    if isinstance(raw_group_list, (list, tuple, set))
+                    else []
+                )
+            ]
             if mode == "blacklist" and str(group_id) in group_list:
                 return False, "该群组已被禁止使用此功能。"
             if mode == "whitelist" and str(group_id) not in group_list:
@@ -118,7 +131,13 @@ class Main(Star):
 
         # --- 用户过滤 ------------------------------------------------ #
         if self.config.get("user_filter_enabled", False):
-            allowed = [str(u) for u in self.config.get("allowed_user_ids", [])]
+            raw_allowed = self.config.get("allowed_user_ids", [])
+            allowed = [
+                str(u)
+                for u in (
+                    raw_allowed if isinstance(raw_allowed, (list, tuple, set)) else []
+                )
+            ]
             if allowed:
                 # 列表非空时，仅允许列表内的用户
                 if str(sender_id) not in allowed:
@@ -175,7 +194,8 @@ class Main(Star):
     ) -> None:
         """将 msg 居中绘制到背景图 bg_path 上，结果保存至 out_path。"""
         font_size = self._get_font_size()
-        img = PILImage.open(bg_path).convert("RGBA")
+        with PILImage.open(bg_path) as src:
+            img = src.convert("RGBA")
         font = PILImageFont.truetype(str(self._plugin_dir / "simhei.ttf"), font_size)
 
         max_width = img.width * self._get_max_width_ratio()
@@ -280,12 +300,13 @@ class Main(Star):
         # 注意：不能在 finally 中删除文件，平台适配器（如 QQ Official）会在 handler
         # 返回后异步读取文件内容，提前删除会导致 FileNotFoundError
         out_path = self._temp_dir / f"report_congrats_{uuid.uuid4().hex}.jpg"
-        self._generate_report(
+        await asyncio.to_thread(
+            self._generate_report,
             self._plugin_dir / "congrats.jpg",
             msg,
-            fill_color=(255, 0, 0),
-            stroke_color=(255, 255, 0),
-            out_path=out_path,
+            (255, 0, 0),
+            (255, 255, 0),
+            out_path,
         )
         self._cleanup_old_temp_files()
         return MessageEventResult().file_image(str(out_path))
@@ -310,12 +331,13 @@ class Main(Star):
         # 注意：不能在 finally 中删除文件，平台适配器（如 QQ Official）会在 handler
         # 返回后异步读取文件内容，提前删除会导致 FileNotFoundError
         out_path = self._temp_dir / f"report_uncongrats_{uuid.uuid4().hex}.jpg"
-        self._generate_report(
+        await asyncio.to_thread(
+            self._generate_report,
             self._plugin_dir / "uncongrats.jpg",
             msg,
-            fill_color=(0, 0, 0),
-            stroke_color=(255, 255, 255),
-            out_path=out_path,
+            (0, 0, 0),
+            (255, 255, 255),
+            out_path,
         )
         self._cleanup_old_temp_files()
         return MessageEventResult().file_image(str(out_path))
