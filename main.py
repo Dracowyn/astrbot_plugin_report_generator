@@ -16,17 +16,6 @@ from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
 
 class Main(Star):
-    # 文字区域最大宽度占图片宽度的比例
-    _MAX_WIDTH_RATIO: float = 0.80
-    # 行间距占字体大小的比例
-    _LINE_SPACING_RATIO: float = 0.3
-    # 文字描边宽度（像素）
-    _STROKE_WIDTH: int = 3
-    # 用户输入的最大字符数，防止超长文本耗尽 CPU 资源
-    _MAX_INPUT_LENGTH: int = 500
-    # 临时目录中本插件最多保留的图片数量
-    _MAX_TEMP_FILES: int = 20
-
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context)
         self.config = config
@@ -79,6 +68,36 @@ class Main(Star):
         except (TypeError, ValueError):
             return 65
         return size if size > 0 else 65
+
+    def _get_max_width_ratio(self) -> float:
+        try:
+            return max(0.1, min(1.0, float(self.config.get("max_width_ratio", 0.80))))
+        except (TypeError, ValueError):
+            return 0.80
+
+    def _get_line_spacing_ratio(self) -> float:
+        try:
+            return max(0.0, min(2.0, float(self.config.get("line_spacing_ratio", 0.3))))
+        except (TypeError, ValueError):
+            return 0.3
+
+    def _get_stroke_width(self) -> int:
+        try:
+            return max(0, int(self.config.get("stroke_width", 3)))
+        except (TypeError, ValueError):
+            return 3
+
+    def _get_max_input_length(self) -> int:
+        try:
+            return max(1, int(self.config.get("max_input_length", 500)))
+        except (TypeError, ValueError):
+            return 500
+
+    def _get_max_temp_files(self) -> int:
+        try:
+            return max(1, int(self.config.get("max_temp_files", 20)))
+        except (TypeError, ValueError):
+            return 20
 
     def _check_access(self, event: AstrMessageEvent) -> tuple[bool, str]:
         """检查访问权限，返回 (是否允许, 拒绝原因)。
@@ -157,22 +176,20 @@ class Main(Star):
         """将 msg 居中绘制到背景图 bg_path 上，结果保存至 out_path。"""
         font_size = self._get_font_size()
         img = PILImage.open(bg_path).convert("RGBA")
-        font = PILImageFont.truetype(
-            str(self._plugin_dir / "simhei.ttf"), font_size
-        )
+        font = PILImageFont.truetype(str(self._plugin_dir / "simhei.ttf"), font_size)
 
-        max_width = img.width * self._MAX_WIDTH_RATIO
+        max_width = img.width * self._get_max_width_ratio()
         wrapped = self._wrap_text(msg, font, max_width)
         lines = wrapped.split("\n")
 
         # 用 PIL 测量每行尺寸（Emoji 的度量值为近似值，但对居中计算已足够准确）
         dummy_draw = PILImageDraw.Draw(PILImage.new("RGBA", (1, 1)))
-        line_spacing = int(font_size * self._LINE_SPACING_RATIO)
+        line_spacing = int(font_size * self._get_line_spacing_ratio())
         line_metrics: list[tuple[float, float]] = []
         for line in lines:
             measure_text = line if line.strip() else " "
             bbox = dummy_draw.textbbox(
-                (0, 0), measure_text, font=font, stroke_width=self._STROKE_WIDTH
+                (0, 0), measure_text, font=font, stroke_width=self._get_stroke_width()
             )
             line_metrics.append((bbox[2] - bbox[0], bbox[3] - bbox[1]))
 
@@ -233,7 +250,7 @@ class Main(Star):
                 line,
                 font=font,
                 fill=fill_color,
-                stroke_width=self._STROKE_WIDTH,
+                stroke_width=self._get_stroke_width(),
                 stroke_fill=stroke_color,
             )
             current_y += lh + line_spacing
@@ -253,9 +270,10 @@ class Main(Star):
         msg = re.sub(r"^\S*喜报\s*", "", event.message_str).strip()
         if not msg:
             return MessageEventResult().message("用法：/喜报 <内容>")
-        if len(msg) > self._MAX_INPUT_LENGTH:
+        max_len = self._get_max_input_length()
+        if len(msg) > max_len:
             return MessageEventResult().message(
-                f"输入内容过长（最大 {self._MAX_INPUT_LENGTH} 个字符）。"
+                f"输入内容过长（最大 {max_len} 个字符）。"
             )
 
         # 使用 UUID 生成唯一文件名，避免并发请求互相覆盖
@@ -282,9 +300,10 @@ class Main(Star):
         msg = re.sub(r"^\S*悲报\s*", "", event.message_str).strip()
         if not msg:
             return MessageEventResult().message("用法：/悲报 <内容>")
-        if len(msg) > self._MAX_INPUT_LENGTH:
+        max_len = self._get_max_input_length()
+        if len(msg) > max_len:
             return MessageEventResult().message(
-                f"输入内容过长（最大 {self._MAX_INPUT_LENGTH} 个字符）。"
+                f"输入内容过长（最大 {max_len} 个字符）。"
             )
 
         # 使用 UUID 生成唯一文件名，避免并发请求互相覆盖
@@ -310,11 +329,12 @@ class Main(Star):
                 if p.suffix == ".jpg"
                 and p.name.startswith(("report_congrats_", "report_uncongrats_"))
             ]
-            if len(files) <= self._MAX_TEMP_FILES:
+            max_keep = self._get_max_temp_files()
+            if len(files) <= max_keep:
                 return
             # 按修改时间升序排列，删除最旧的超出部分
             files.sort(key=lambda p: p.stat().st_mtime)
-            for old_file in files[: len(files) - self._MAX_TEMP_FILES]:
+            for old_file in files[: len(files) - max_keep]:
                 try:
                     old_file.unlink()
                 except OSError as e:

@@ -34,5 +34,35 @@
     "type": "list",
     "default": [],
     "hint": "填写用户 ID（字符串形式），仅限列表内的用户可使用（需开启用户 ID 限制开关）。若列表为空，则默认仅允许管理员使用。"
+  },
+  "max_width_ratio": {
+    "description": "文字区域宽度比例",
+    "type": "float",
+    "default": 0.8,
+    "hint": "文字渲染区域最大宽度占图片宽度的比例，取值范围 0.1 ~ 1.0，默认值为 0.8"
+  },
+  "line_spacing_ratio": {
+    "description": "行间距比例",
+    "type": "float",
+    "default": 0.3,
+    "hint": "行间距占字体大小的比例，取值范围 0.0 ~ 2.0，默认值为 0.3"
+  },
+  "stroke_width": {
+    "description": "文字描边宽度",
+    "type": "int",
+    "default": 3,
+    "hint": "文字描边宽度（像素），设为 0 可关闭描边，默认值为 3"
+  },
+  "max_input_length": {
+    "description": "最大输入字符数",
+    "type": "int",
+    "default": 300,
+    "hint": "用户输入的最大字符数，超过此长度将拒绝请求，防止超长文本耗尽资源，默认值为 500"
+  },
+  "max_temp_files": {
+    "description": "最多保留临时文件数",
+    "type": "int",
+    "default": 10,
+    "hint": "临时目录中本插件最多保留的图片数量，超出时自动删除最旧的文件，默认值为 20"
   }
 }
