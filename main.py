@@ -1,19 +1,12 @@
 import asyncio
-import os
+import re
 import unicodedata
 import uuid
+from pathlib import Path
 
 from PIL import Image as PILImage
 from PIL import ImageDraw as PILImageDraw
 from PIL import ImageFont as PILImageFont
-
-try:
-    from pilmoji import Pilmoji as _Pilmoji
-
-    _PILMOJI_AVAILABLE = True
-except ImportError:
-    _Pilmoji = None  # 未安装 pilmoji 时占位，实际由 _PILMOJI_AVAILABLE 控制分支
-    _PILMOJI_AVAILABLE = False
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter
@@ -23,16 +16,33 @@ from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
 
 class Main(Star):
+    # 文字区域最大宽度占图片宽度的比例
+    _MAX_WIDTH_RATIO: float = 0.80
+    # 行间距占字体大小的比例
+    _LINE_SPACING_RATIO: float = 0.3
+    # 文字描边宽度（像素）
+    _STROKE_WIDTH: int = 3
+    # 用户输入的最大字符数，防止超长文本耗尽 CPU 资源
+    _MAX_INPUT_LENGTH: int = 500
+    # 临时目录中本插件最多保留的图片数量
+    _MAX_TEMP_FILES: int = 20
+
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context)
         self.config = config
-        self._plugin_dir = os.path.abspath(os.path.dirname(__file__))
-        self._temp_dir = get_astrbot_temp_path()
-        os.makedirs(self._temp_dir, exist_ok=True)
+        self._plugin_dir = Path(__file__).parent
+        self._temp_dir = Path(get_astrbot_temp_path())
+        self._temp_dir.mkdir(parents=True, exist_ok=True)
         # 持有后台任务的强引用，防止 GC 在任务执行中意外回收
         self._bg_tasks: set[asyncio.Task] = set()
 
-        if not _PILMOJI_AVAILABLE:
+        # 将 pilmoji 类存入实例属性，避免修改模块级全局状态造成竞争隐患
+        try:
+            from pilmoji import Pilmoji as _PilmojiClass
+
+            self._pilmoji_class: type | None = _PilmojiClass
+        except ImportError:
+            self._pilmoji_class = None
             # pilmoji 是可选依赖，import 不会失败，因此不会触发 AstrBot 的自动安装机制
             # 需要在此处主动安装，安装完成后重新导入以启用 Emoji 渲染
             logger.info("[report_generator] pilmoji 未安装，正在自动安装...")
@@ -45,14 +55,13 @@ class Main(Star):
 
     async def _install_pilmoji(self) -> None:
         """后台安装 pilmoji 并重新导入，使本次运行即可启用 Emoji 渲染。"""
-        global _Pilmoji, _PILMOJI_AVAILABLE
         try:
-            req_path = os.path.join(self._plugin_dir, "requirements.txt")
-            await pip_installer.install(requirements_path=req_path)
+            await pip_installer.install(
+                requirements_path=str(self._plugin_dir / "requirements.txt")
+            )
             from pilmoji import Pilmoji as _PilmojiImported
 
-            _Pilmoji = _PilmojiImported
-            _PILMOJI_AVAILABLE = True
+            self._pilmoji_class = _PilmojiImported
             logger.info("[report_generator] pilmoji 安装成功，Emoji 渲染已启用。")
         except Exception as e:
             logger.warning(
@@ -139,30 +148,32 @@ class Main(Star):
 
     def _generate_report(
         self,
-        bg_path: str,
+        bg_path: Path,
         msg: str,
         fill_color: tuple,
         stroke_color: tuple,
-        out_path: str,
+        out_path: Path,
     ) -> None:
         """将 msg 居中绘制到背景图 bg_path 上，结果保存至 out_path。"""
         font_size = self._get_font_size()
         img = PILImage.open(bg_path).convert("RGBA")
         font = PILImageFont.truetype(
-            os.path.join(self._plugin_dir, "simhei.ttf"), font_size
+            str(self._plugin_dir / "simhei.ttf"), font_size
         )
 
-        max_width = img.width * 0.80
+        max_width = img.width * self._MAX_WIDTH_RATIO
         wrapped = self._wrap_text(msg, font, max_width)
         lines = wrapped.split("\n")
 
         # 用 PIL 测量每行尺寸（Emoji 的度量值为近似值，但对居中计算已足够准确）
         dummy_draw = PILImageDraw.Draw(PILImage.new("RGBA", (1, 1)))
-        line_spacing = int(font_size * 0.3)
+        line_spacing = int(font_size * self._LINE_SPACING_RATIO)
         line_metrics: list[tuple[float, float]] = []
         for line in lines:
             measure_text = line if line.strip() else " "
-            bbox = dummy_draw.textbbox((0, 0), measure_text, font=font, stroke_width=3)
+            bbox = dummy_draw.textbbox(
+                (0, 0), measure_text, font=font, stroke_width=self._STROKE_WIDTH
+            )
             line_metrics.append((bbox[2] - bbox[0], bbox[3] - bbox[1]))
 
         total_h = sum(h for _, h in line_metrics) + line_spacing * max(
@@ -170,10 +181,9 @@ class Main(Star):
         )
         start_y = (img.height - total_h) / 2
 
-        if _PILMOJI_AVAILABLE:
+        if self._pilmoji_class is not None:
             # pilmoji 将 Emoji 码点替换为 Twemoji PNG 图像渲染，避免出现方块乱码
-            assert _Pilmoji is not None
-            with _Pilmoji(img) as ctx:
+            with self._pilmoji_class(img) as ctx:
                 self._draw_lines(
                     ctx,
                     lines,
@@ -200,10 +210,10 @@ class Main(Star):
                 stroke_color,
             )
 
-        img.convert("RGB").save(out_path, "JPEG")
+        img.convert("RGB").save(str(out_path), "JPEG")
 
-    @staticmethod
     def _draw_lines(
+        self,
         ctx,
         lines: list[str],
         line_metrics: list[tuple[float, float]],
@@ -223,7 +233,7 @@ class Main(Star):
                 line,
                 font=font,
                 fill=fill_color,
-                stroke_width=3,
+                stroke_width=self._STROKE_WIDTH,
                 stroke_fill=stroke_color,
             )
             current_y += lh + line_spacing
@@ -239,26 +249,28 @@ class Main(Star):
         if not allowed:
             return MessageEventResult().message(reason)
 
-        # 仅切掉开头的命令词，避免 "/喜报 喜报" 这类输入被替换成空字符串
-        msg = event.message_str[len("喜报") :].strip()
+        # 用正则去除命令词（含可能的指令前缀如 /），兼容 /喜报 和 喜报 两种触发方式
+        msg = re.sub(r"^\S*喜报\s*", "", event.message_str).strip()
         if not msg:
             return MessageEventResult().message("用法：/喜报 <内容>")
+        if len(msg) > self._MAX_INPUT_LENGTH:
+            return MessageEventResult().message(
+                f"输入内容过长（最大 {self._MAX_INPUT_LENGTH} 个字符）。"
+            )
 
         # 使用 UUID 生成唯一文件名，避免并发请求互相覆盖
         # 注意：不能在 finally 中删除文件，平台适配器（如 QQ Official）会在 handler
         # 返回后异步读取文件内容，提前删除会导致 FileNotFoundError
-        out_path = os.path.join(
-            self._temp_dir, f"report_congrats_{uuid.uuid4().hex}.jpg"
-        )
+        out_path = self._temp_dir / f"report_congrats_{uuid.uuid4().hex}.jpg"
         self._generate_report(
-            os.path.join(self._plugin_dir, "congrats.jpg"),
+            self._plugin_dir / "congrats.jpg",
             msg,
             fill_color=(255, 0, 0),
             stroke_color=(255, 255, 0),
             out_path=out_path,
         )
         self._cleanup_old_temp_files()
-        return MessageEventResult().file_image(out_path)
+        return MessageEventResult().file_image(str(out_path))
 
     @filter.command("悲报")
     async def uncongrats(self, event: AstrMessageEvent):
@@ -267,43 +279,47 @@ class Main(Star):
         if not allowed:
             return MessageEventResult().message(reason)
 
-        msg = event.message_str[len("悲报") :].strip()
+        msg = re.sub(r"^\S*悲报\s*", "", event.message_str).strip()
         if not msg:
             return MessageEventResult().message("用法：/悲报 <内容>")
+        if len(msg) > self._MAX_INPUT_LENGTH:
+            return MessageEventResult().message(
+                f"输入内容过长（最大 {self._MAX_INPUT_LENGTH} 个字符）。"
+            )
 
         # 使用 UUID 生成唯一文件名，避免并发请求互相覆盖
         # 注意：不能在 finally 中删除文件，平台适配器（如 QQ Official）会在 handler
         # 返回后异步读取文件内容，提前删除会导致 FileNotFoundError
-        out_path = os.path.join(
-            self._temp_dir, f"report_uncongrats_{uuid.uuid4().hex}.jpg"
-        )
+        out_path = self._temp_dir / f"report_uncongrats_{uuid.uuid4().hex}.jpg"
         self._generate_report(
-            os.path.join(self._plugin_dir, "uncongrats.jpg"),
+            self._plugin_dir / "uncongrats.jpg",
             msg,
             fill_color=(0, 0, 0),
             stroke_color=(255, 255, 255),
             out_path=out_path,
         )
         self._cleanup_old_temp_files()
-        return MessageEventResult().file_image(out_path)
+        return MessageEventResult().file_image(str(out_path))
 
-    def _cleanup_old_temp_files(self, keep: int = 20) -> None:
-        """清理临时目录中本插件生成的旧图片，最多保留最新的 keep 个文件。"""
+    def _cleanup_old_temp_files(self) -> None:
+        """清理临时目录中本插件生成的旧图片，最多保留最新的 _MAX_TEMP_FILES 个文件。"""
         try:
-            prefix = ("report_congrats_", "report_uncongrats_")
             files = [
-                os.path.join(self._temp_dir, f)
-                for f in os.listdir(self._temp_dir)
-                if f.endswith(".jpg") and f.startswith(prefix)
+                p
+                for p in self._temp_dir.iterdir()
+                if p.suffix == ".jpg"
+                and p.name.startswith(("report_congrats_", "report_uncongrats_"))
             ]
-            if len(files) <= keep:
+            if len(files) <= self._MAX_TEMP_FILES:
                 return
             # 按修改时间升序排列，删除最旧的超出部分
-            files.sort(key=lambda p: os.path.getmtime(p))
-            for old_file in files[: len(files) - keep]:
+            files.sort(key=lambda p: p.stat().st_mtime)
+            for old_file in files[: len(files) - self._MAX_TEMP_FILES]:
                 try:
-                    os.remove(old_file)
-                except OSError:
-                    pass
-        except OSError:
-            pass
+                    old_file.unlink()
+                except OSError as e:
+                    logger.warning(
+                        f"[report_generator] 清理临时文件失败: {old_file.name}: {e}"
+                    )
+        except OSError as e:
+            logger.warning(f"[report_generator] 扫描临时目录失败: {e}")
