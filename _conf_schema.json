@@ -1,0 +1,38 @@
+{
+  "report_font_size": {
+    "description": "字体大小",
+    "type": "int",
+    "default": 65,
+    "hint": "喜报/悲报图片中文字的字体大小，默认值为 65"
+  },
+  "group_filter_enabled": {
+    "description": "启用群组过滤",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，将根据下方的过滤模式和群组列表对群组进行过滤。私聊不受此限制。"
+  },
+  "group_filter_mode": {
+    "description": "群组过滤模式",
+    "type": "string",
+    "default": "blacklist",
+    "hint": "blacklist（黑名单）：群组列表内的群组禁止使用；whitelist（白名单）：仅群组列表内的群组可使用"
+  },
+  "group_list": {
+    "description": "群组 ID 列表",
+    "type": "list",
+    "default": [],
+    "hint": "填写群组 ID（字符串形式），根据过滤模式决定黑名单或白名单"
+  },
+  "user_filter_enabled": {
+    "description": "启用用户 ID 限制",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后，仅允许下方列表中的用户 ID 使用喜报/悲报功能"
+  },
+  "allowed_user_ids": {
+    "description": "允许使用的用户 ID 列表",
+    "type": "list",
+    "default": [],
+    "hint": "填写用户 ID（字符串形式），仅限列表内的用户可使用（需开启用户 ID 限制开关）。若列表为空，则默认仅允许管理员使用。"
+  }
+}

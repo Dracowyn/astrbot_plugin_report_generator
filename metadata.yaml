@@ -1,0 +1,6 @@
+name: astrbot_plugin_report_generator
+desc: 喜报/悲报图片生成器，支持群组黑白名单、用户ID限制。
+help: "指令：/喜报 <内容>、/悲报 <内容>"
+version: v1.0.0
+author: Dracowyn
+repo: https://github.com/Dracowyn/astrbot_plugin_report_generator
