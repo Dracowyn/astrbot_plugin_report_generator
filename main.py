@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import os
 import unicodedata
 import uuid
@@ -16,14 +15,11 @@ except ImportError:
     _Pilmoji = None  # 未安装 pilmoji 时占位，实际由 _PILMOJI_AVAILABLE 控制分支
     _PILMOJI_AVAILABLE = False
 
-import astrbot.api.event.filter as event_filter
-from astrbot.api import AstrBotConfig
-from astrbot.api.event import AstrMessageEvent, MessageEventResult
+from astrbot.api import AstrBotConfig, logger
+from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter
 from astrbot.api.star import Context, Star
 from astrbot.core import pip_installer
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
-
-logger = logging.getLogger("astrbot")
 
 
 class Main(Star):
@@ -33,15 +29,19 @@ class Main(Star):
         self._plugin_dir = os.path.abspath(os.path.dirname(__file__))
         self._temp_dir = get_astrbot_temp_path()
         os.makedirs(self._temp_dir, exist_ok=True)
+        # 持有后台任务的强引用，防止 GC 在任务执行中意外回收
+        self._bg_tasks: set[asyncio.Task] = set()
 
         if not _PILMOJI_AVAILABLE:
             # pilmoji 是可选依赖，import 不会失败，因此不会触发 AstrBot 的自动安装机制
             # 需要在此处主动安装，安装完成后重新导入以启用 Emoji 渲染
             logger.info("[report_generator] pilmoji 未安装，正在自动安装...")
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._install_pilmoji(),
                 name="report_generator_install_pilmoji",
             )
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
 
     async def _install_pilmoji(self) -> None:
         """后台安装 pilmoji 并重新导入，使本次运行即可启用 Emoji 渲染。"""
@@ -71,13 +71,13 @@ class Main(Star):
             return 65
         return size if size > 0 else 65
 
-    def _check_access(self, message: AstrMessageEvent) -> tuple[bool, str]:
+    def _check_access(self, event: AstrMessageEvent) -> tuple[bool, str]:
         """检查访问权限，返回 (是否允许, 拒绝原因)。
 
         群组过滤仅对群消息生效，私聊消息总是通过。
         """
-        group_id = message.get_group_id()
-        sender_id = message.get_sender_id()
+        group_id = event.get_group_id()
+        sender_id = event.get_sender_id()
 
         # --- 群组过滤 ----------------------------------------------- #
         if group_id and self.config.get("group_filter_enabled", False):
@@ -97,7 +97,7 @@ class Main(Star):
                     return False, "你没有权限使用此功能。"
             else:
                 # 列表为空时，默认仅允许管理员使用
-                if not message.is_admin():
+                if not event.is_admin():
                     return False, "你没有权限使用此功能。"
 
         return True, ""
@@ -232,15 +232,15 @@ class Main(Star):
     #  指令处理                                                             #
     # ------------------------------------------------------------------ #
 
-    @event_filter.command("喜报")
-    async def congrats(self, message: AstrMessageEvent):
+    @filter.command("喜报")
+    async def congrats(self, event: AstrMessageEvent):
         """喜报生成器。用法：/喜报 <内容>"""
-        allowed, reason = self._check_access(message)
+        allowed, reason = self._check_access(event)
         if not allowed:
             return MessageEventResult().message(reason)
 
         # 仅切掉开头的命令词，避免 "/喜报 喜报" 这类输入被替换成空字符串
-        msg = message.message_str[len("喜报") :].strip()
+        msg = event.message_str[len("喜报") :].strip()
         if not msg:
             return MessageEventResult().message("用法：/喜报 <内容>")
 
@@ -257,16 +257,17 @@ class Main(Star):
             stroke_color=(255, 255, 0),
             out_path=out_path,
         )
+        self._cleanup_old_temp_files()
         return MessageEventResult().file_image(out_path)
 
-    @event_filter.command("悲报")
-    async def uncongrats(self, message: AstrMessageEvent):
+    @filter.command("悲报")
+    async def uncongrats(self, event: AstrMessageEvent):
         """悲报生成器。用法：/悲报 <内容>"""
-        allowed, reason = self._check_access(message)
+        allowed, reason = self._check_access(event)
         if not allowed:
             return MessageEventResult().message(reason)
 
-        msg = message.message_str[len("悲报") :].strip()
+        msg = event.message_str[len("悲报") :].strip()
         if not msg:
             return MessageEventResult().message("用法：/悲报 <内容>")
 
@@ -283,4 +284,26 @@ class Main(Star):
             stroke_color=(255, 255, 255),
             out_path=out_path,
         )
+        self._cleanup_old_temp_files()
         return MessageEventResult().file_image(out_path)
+
+    def _cleanup_old_temp_files(self, keep: int = 20) -> None:
+        """清理临时目录中本插件生成的旧图片，最多保留最新的 keep 个文件。"""
+        try:
+            prefix = ("report_congrats_", "report_uncongrats_")
+            files = [
+                os.path.join(self._temp_dir, f)
+                for f in os.listdir(self._temp_dir)
+                if f.endswith(".jpg") and f.startswith(prefix)
+            ]
+            if len(files) <= keep:
+                return
+            # 按修改时间升序排列，删除最旧的超出部分
+            files.sort(key=lambda p: os.path.getmtime(p))
+            for old_file in files[: len(files) - keep]:
+                try:
+                    os.remove(old_file)
+                except OSError:
+                    pass
+        except OSError:
+            pass
