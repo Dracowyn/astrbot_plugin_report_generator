@@ -28,6 +28,8 @@ class Main(Star):
             self._pilmoji_class: type | None = _PilmojiClass
         except ImportError:
             self._pilmoji_class = None
+            logger.warning("[report_generator] pilmoji 未安装，Emoji 将显示为方块。"
+)
 
     # ------------------------------------------------------------------ #
     #  辅助方法                                                             #
