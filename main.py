@@ -11,7 +11,6 @@ from PIL import ImageFont as PILImageFont
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter
 from astrbot.api.star import Context, Star
-from astrbot.core import pip_installer
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
 
@@ -22,9 +21,6 @@ class Main(Star):
         self._plugin_dir = Path(__file__).parent
         self._temp_dir = Path(get_astrbot_temp_path())
         self._temp_dir.mkdir(parents=True, exist_ok=True)
-        # 持有后台任务的强引用，防止 GC 在任务执行中意外回收
-        self._bg_tasks: set[asyncio.Task] = set()
-
         # 将 pilmoji 类存入实例属性，避免修改模块级全局状态造成竞争隐患
         try:
             from pilmoji import Pilmoji as _PilmojiClass
@@ -32,35 +28,6 @@ class Main(Star):
             self._pilmoji_class: type | None = _PilmojiClass
         except ImportError:
             self._pilmoji_class = None
-            # pilmoji 未安装，延迟到 on_astrbot_loaded 魔法再调度安装，避免 __init__ 中无事件循环的风险
-
-    @filter.on_astrbot_loaded()
-    async def on_loaded(self, event) -> None:
-        """框架完全启动后，若 pilmoji 未安装则在此调度安装。"""
-        if self._pilmoji_class is None:
-            # 平台此时已有运行中的事件循环，可安全创建任务
-            logger.info("[report_generator] pilmoji 未安装，正在自动安装...")
-            task = asyncio.create_task(
-                self._install_pilmoji(),
-                name="report_generator_install_pilmoji",
-            )
-            self._bg_tasks.add(task)
-            task.add_done_callback(self._bg_tasks.discard)
-
-    async def _install_pilmoji(self) -> None:
-        """后台安装 pilmoji 并重新导入，使本次运行即可启用 Emoji 渲染。"""
-        try:
-            await pip_installer.install(
-                requirements_path=str(self._plugin_dir / "requirements.txt")
-            )
-            from pilmoji import Pilmoji as _PilmojiImported
-
-            self._pilmoji_class = _PilmojiImported
-            logger.info("[report_generator] pilmoji 安装成功，Emoji 渲染已启用。")
-        except Exception as e:
-            logger.warning(
-                f"[report_generator] pilmoji 安装失败，Emoji 将显示为方块: {e}"
-            )
 
     # ------------------------------------------------------------------ #
     #  辅助方法                                                             #
